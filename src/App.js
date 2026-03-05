@@ -1,575 +1,445 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
-  AreaChart, Area,
-  BarChart, Bar,
-  LineChart, Line,
-  PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from "recharts";
-import "./App.css";
 
-/* ─────────────────────────────────────────
-   Constants & Helpers
-───────────────────────────────────────── */
-const API = "";  // empty = uses CRA proxy to localhost:5000
+const API = "http://localhost:5000/api";
 
-const ORANGE_PALETTE = [
-  "#f97316","#fb923c","#fdba74","#fed7aa",
-  "#ea580c","#c2410c","#9a3412","#7c2d12",
-  "#ff6b00","#e55100"
-];
-
-const fmtK = (n) => {
-  if (n == null) return "—";
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
-  return Number(n).toFixed(0);
+// ── Design tokens ─────────────────────────────────────────────────────────────
+const C = {
+  bg:      "#0B1120",
+  surface: "#111827",
+  card:    "#1a2236",
+  border:  "#1f2f4a",
+  accent:  "#22d3a5",
+  accent2: "#f59e0b",
+  accent3: "#6366f1",
+  text:    "#e2e8f0",
+  muted:   "#64748b",
 };
 
-/* ─────────────────────────────────────────
-   Custom Hook
-───────────────────────────────────────── */
-function useFetch(url) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+const FAMILY_COLORS = [
+  "#22d3a5","#f59e0b","#6366f1","#f43f5e","#38bdf8","#a3e635","#fb923c","#c084fc"
+];
 
-  useEffect(() => {
-    setLoading(true);
-    fetch(API + url)
-      .then((r) => {
-        if (!r.ok) throw new Error("Network error");
-        return r.json();
-      })
-      .then((d) => { setData(d); setLoading(false); })
-      .catch((e) => { setError(e.message); setLoading(false); });
-  }, [url]);
-
-  return { data, loading, error };
+// ── Fetch helper ──────────────────────────────────────────────────────────────
+async function apiFetch(path) {
+  const r = await fetch(`${API}${path}`);
+  return r.json();
 }
 
-/* ─────────────────────────────────────────
-   Shared UI Components
-───────────────────────────────────────── */
-function StatCard({ label, value, icon, accent, sub }) {
+// ── Components ────────────────────────────────────────────────────────────────
+function KPICard({ label, value, sub, color = C.accent }) {
   return (
-    <div className="stat-card" style={{ borderTop: `3px solid ${accent}` }}>
-      <div className="stat-icon">{icon}</div>
-      <div className="stat-value">{value}</div>
-      <div className="stat-label">{label}</div>
-      {sub && <div className="stat-sub">{sub}</div>}
+    <div style={{
+      background: C.card, border: `1px solid ${C.border}`,
+      borderRadius: 12, padding: "20px 24px", flex: 1, minWidth: 160,
+      borderTop: `3px solid ${color}`,
+    }}>
+      <div style={{ color: C.muted, fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+      <div style={{ color: C.text, fontSize: 26, fontWeight: 700, fontFamily: "monospace" }}>{value}</div>
+      {sub && <div style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }
 
-function Card({ title, children, className }) {
+function SectionTitle({ children }) {
   return (
-    <div className={`card ${className || ""}`}>
-      {title && <div className="card-title">{title}</div>}
+    <h2 style={{
+      color: C.accent, fontSize: 13, letterSpacing: "0.15em",
+      textTransform: "uppercase", marginBottom: 16, marginTop: 0,
+      display: "flex", alignItems: "center", gap: 8,
+    }}>
+      <span style={{ width: 18, height: 2, background: C.accent, display: "inline-block" }} />
+      {children}
+    </h2>
+  );
+}
+
+function ChartCard({ title, children, style = {} }) {
+  return (
+    <div style={{
+      background: C.card, border: `1px solid ${C.border}`,
+      borderRadius: 12, padding: 20, ...style
+    }}>
+      <SectionTitle>{title}</SectionTitle>
       {children}
     </div>
   );
 }
 
-function Loader() {
+const customTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
   return (
-    <div className="loader-wrap">
-      <div className="loader-ring" />
-      <span>Loading data…</span>
+    <div style={{ background: "#0d1a2d", border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px" }}>
+      <div style={{ color: C.muted, fontSize: 11, marginBottom: 4 }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color || C.accent, fontSize: 13, fontFamily: "monospace" }}>
+          {p.name}: {typeof p.value === "number" ? p.value.toFixed(2) : p.value}
+        </div>
+      ))}
     </div>
   );
-}
-
-const tooltipStyle = {
-  background: "#1a1a1a",
-  border: "1px solid #2a2a2a",
-  borderRadius: 8,
-  fontFamily: "'DM Mono', monospace",
-  fontSize: 12,
 };
 
-/* ─────────────────────────────────────────
-   Page: Overview
-───────────────────────────────────────── */
-function Overview() {
-  const { data: overview, loading: l1 } = useFetch("/api/overview");
-  const { data: byFamily, loading: l2 } = useFetch("/api/sales/by-family");
-  const { data: oilData, loading: l3 }  = useFetch("/api/oil");
-  const { data: weeklyData }             = useFetch("/api/sales/weekly");
+// ── Main App ──────────────────────────────────────────────────────────────────
+export default function App() {
+  const [summary, setSummary]       = useState(null);
+  const [stores, setStores]         = useState([]);
+  const [items, setItems]           = useState([]);
+  const [trend, setTrend]           = useState([]);
+  const [familySales, setFamily]    = useState([]);
+  const [topItems, setTopItems]     = useState([]);
+  const [storeComp, setStoreComp]   = useState([]);
+  const [forecast, setForecast]     = useState(null);
+  const [selStore, setSelStore]     = useState(1);
+  const [selItem, setSelItem]       = useState(1);
+  const [fcDays, setFcDays]         = useState(30);
+  const [loading, setLoading]       = useState(false);
+  const [activeTab, setActiveTab]   = useState("dashboard");
 
-  if (l1 || l2 || l3) return <Loader />;
+  useEffect(() => {
+    apiFetch("/summary").then(setSummary);
+    apiFetch("/stores").then(setStores);
+    apiFetch("/items").then(setItems);
+    apiFetch("/sales_by_family").then(setFamily);
+    apiFetch("/store_comparison").then(setStoreComp);
+  }, []);
 
-  return (
-    <div className="page">
-      <div className="page-header">
-        <h1>Sales Overview</h1>
-        <span className="page-sub">
-          {overview?.date_range?.start} → {overview?.date_range?.end}
-        </span>
-      </div>
+  useEffect(() => {
+    apiFetch(`/sales_trend?store_nbr=${selStore}`).then(d => {
+      // aggregate by week for readability
+      const weekly = {};
+      d.forEach(row => {
+        const wk = row.date.slice(0, 7); // month grouping
+        weekly[wk] = (weekly[wk] || 0) + row.unit_sales;
+      });
+      setTrend(Object.entries(weekly).map(([k, v]) => ({ date: k, unit_sales: +v.toFixed(2) })));
+    });
+    apiFetch(`/top_items?store_nbr=${selStore}`).then(setTopItems);
+  }, [selStore]);
 
-      <div className="stats-grid">
-        <StatCard label="Total Sales"   value={fmtK(overview?.total_sales)} icon="🛒" accent="#f97316" />
-        <StatCard label="Stores"        value={overview?.store_count}        icon="🏪" accent="#fb923c" sub="across Ecuador" />
-        <StatCard label="Products"      value={fmtK(overview?.item_count)}   icon="📦" accent="#ea580c" />
-        <StatCard label="Data Coverage" value="3+ Years"                     icon="📅" accent="#c2410c" sub="2013 – 2017" />
-      </div>
-
-      <div className="grid-2">
-        <Card title="Monthly Sales Trend">
-          <ResponsiveContainer width="100%" height={240}>
-            <AreaChart data={overview?.monthly_trend || []}>
-              <defs>
-                <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#f97316" stopOpacity={0.35} />
-                  <stop offset="95%" stopColor="#f97316" stopOpacity={0}    />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-              <XAxis dataKey="month_year" tick={{ fill: "#666", fontSize: 9 }} interval={4} />
-              <YAxis tickFormatter={fmtK} tick={{ fill: "#666", fontSize: 10 }} />
-              <Tooltip formatter={(v) => [fmtK(v), "Sales"]}
-                contentStyle={tooltipStyle} labelStyle={{ color: "#f97316" }} />
-              <Area type="monotone" dataKey="unit_sales"
-                stroke="#f97316" fill="url(#salesGrad)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card title="Avg Sales — Day of Week">
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={weeklyData || []}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-              <XAxis dataKey="day" tick={{ fill: "#666", fontSize: 10 }}
-                tickFormatter={(v) => v.slice(0, 3)} />
-              <YAxis tickFormatter={fmtK} tick={{ fill: "#666", fontSize: 10 }} />
-              <Tooltip formatter={(v) => [fmtK(v), "Avg Sales"]}
-                contentStyle={tooltipStyle} />
-              <Bar dataKey="avg_sales" radius={[4, 4, 0, 0]}>
-                {(weeklyData || []).map((_, i) => (
-                  <Cell key={i} fill={i >= 5 ? "#f97316" : "#fb923c"} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      <div className="grid-2">
-        <Card title="Sales by Product Family (Top 10)">
-          <ResponsiveContainer width="100%" height={290}>
-            <BarChart data={(byFamily || []).slice(0, 10)} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-              <XAxis type="number" tickFormatter={fmtK} tick={{ fill: "#666", fontSize: 10 }} />
-              <YAxis type="category" dataKey="family"
-                tick={{ fill: "#ccc", fontSize: 10 }} width={110} />
-              <Tooltip formatter={(v) => [fmtK(v), "Sales"]}
-                contentStyle={tooltipStyle} />
-              <Bar dataKey="total_sales" radius={[0, 4, 4, 0]}>
-                {(byFamily || []).slice(0, 10).map((_, i) => (
-                  <Cell key={i} fill={ORANGE_PALETTE[i % ORANGE_PALETTE.length]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card title="Oil Price Trend (Ecuador)">
-          <div className="info-note">
-            Ecuador is oil-dependent — price shocks directly affect consumer spending
-          </div>
-          <ResponsiveContainer width="100%" height={235}>
-            <LineChart data={(oilData || []).slice(-36)}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-              <XAxis dataKey="month" tick={{ fill: "#666", fontSize: 9 }} interval={5} />
-              <YAxis tick={{ fill: "#666", fontSize: 10 }} />
-              <Tooltip formatter={(v) => [`$${v}`, "Oil Price"]}
-                contentStyle={tooltipStyle} />
-              <Line type="monotone" dataKey="oil_price"
-                stroke="#fdba74" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────
-   Page: Stores
-───────────────────────────────────────── */
-function Stores() {
-  const { data: stores, loading: l1 } = useFetch("/api/stores");
-  const { data: byCity,  loading: l2 } = useFetch("/api/sales/by-city");
-  const [typeFilter, setTypeFilter] = useState("All");
-
-  if (l1 || l2) return <Loader />;
-
-  const types = ["All", ...new Set((stores || []).map((s) => s.type).filter(Boolean))];
-  const filtered = (stores || []).filter(
-    (s) => typeFilter === "All" || s.type === typeFilter
-  );
-
-  return (
-    <div className="page">
-      <div className="page-header">
-        <h1>Store Analytics</h1>
-        <span className="page-sub">54 stores across Ecuador</span>
-      </div>
-
-      <div className="grid-2">
-        <Card title="Sales Distribution by City">
-          <ResponsiveContainer width="100%" height={270}>
-            <PieChart>
-              <Pie data={byCity || []} dataKey="total_sales" nameKey="city"
-                cx="50%" cy="50%" outerRadius={100}
-                label={({ city, percent }) =>
-                  `${city} ${(percent * 100).toFixed(0)}%`}
-                labelLine={{ stroke: "#444" }}>
-                {(byCity || []).map((_, i) => (
-                  <Cell key={i} fill={ORANGE_PALETTE[i % ORANGE_PALETTE.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(v) => [fmtK(v), "Sales"]}
-                contentStyle={tooltipStyle} />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card title="Top 10 Stores by Sales">
-          <ResponsiveContainer width="100%" height={270}>
-            <BarChart
-              data={(stores || [])
-                .sort((a, b) => b.total_sales - a.total_sales)
-                .slice(0, 10)}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-              <XAxis dataKey="store_nbr" tick={{ fill: "#666", fontSize: 10 }}
-                tickFormatter={(v) => `S${v}`} />
-              <YAxis tickFormatter={fmtK} tick={{ fill: "#666", fontSize: 10 }} />
-              <Tooltip formatter={(v) => [fmtK(v), "Sales"]}
-                contentStyle={tooltipStyle} />
-              <Bar dataKey="total_sales" radius={[4, 4, 0, 0]} fill="#f97316" />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      <Card title="All Stores">
-        <div className="filter-row">
-          {types.map((t) => (
-            <button key={t}
-              className={`filter-btn ${typeFilter === t ? "active" : ""}`}
-              onClick={() => setTypeFilter(t)}>
-              {t}
-            </button>
-          ))}
-        </div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>#</th><th>City</th><th>State</th>
-                <th>Type</th><th>Cluster</th><th>Total Sales</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((s) => (
-                <tr key={s.store_nbr}>
-                  <td><span className="store-badge">S{s.store_nbr}</span></td>
-                  <td>{s.city}</td>
-                  <td>{s.state}</td>
-                  <td><span className={`type-tag type-${s.type}`}>{s.type}</span></td>
-                  <td>{s.cluster}</td>
-                  <td className="num-cell">{fmtK(s.total_sales)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────
-   Page: Forecast
-───────────────────────────────────────── */
-function Forecast() {
-  const [storeNbr, setStoreNbr] = useState(1);
-  const [days, setDays]         = useState(16);
-  const [result, setResult]     = useState(null);
-  const [loading, setLoading]   = useState(false);
-
-  const runForecast = () => {
+  const runForecast = useCallback(() => {
     setLoading(true);
-    fetch(`/api/forecast?store_nbr=${storeNbr}&days=${days}`)
-      .then((r) => r.json())
-      .then((d) => { setResult(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  };
+    apiFetch(`/forecast?store_nbr=${selStore}&item_nbr=${selItem}&days=${fcDays}`)
+      .then(d => { setForecast(d); setLoading(false); });
+  }, [selStore, selItem, fcDays]);
 
-  // Run on mount
-  useEffect(() => { runForecast(); }, []); // eslint-disable-line
+  const fmt = n => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
 
-  const preds  = result?.predictions || [];
-  const total  = preds.reduce((s, r) => s + r.predicted_sales, 0);
-  const peak   = preds.length
-    ? preds.reduce((a, b) => (a.predicted_sales > b.predicted_sales ? a : b))
-    : null;
+  const tabs = ["dashboard", "forecast", "stores", "items"];
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h1>Sales Forecast</h1>
-        <span className="page-sub">LightGBM · seasonal + event features</span>
-      </div>
-
-      <Card title="Parameters">
-        <div className="controls">
-          <div className="ctrl-group">
-            <label>Store Number</label>
-            <input type="number" min={1} max={54} value={storeNbr}
-              onChange={(e) => setStoreNbr(Number(e.target.value))}
-              className="ctrl-input" />
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'DM Sans', 'Segoe UI', sans-serif" }}>
+      {/* Header */}
+      <header style={{
+        background: C.surface, borderBottom: `1px solid ${C.border}`,
+        padding: "0 32px", display: "flex", alignItems: "center", gap: 32, height: 60,
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 28, height: 28, background: C.accent, borderRadius: 6,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize: 16 }}>🌿</div>
+          <div>
+            <div style={{ color: C.text, fontWeight: 700, fontSize: 15, lineHeight: 1 }}>Richfield Fertilisers</div>
+            <div style={{ color: C.muted, fontSize: 10, letterSpacing: "0.06em" }}>FORECAST INTELLIGENCE</div>
           </div>
-          <div className="ctrl-group">
-            <label>Horizon: {days} days</label>
-            <input type="range" min={7} max={30} value={days}
-              onChange={(e) => setDays(Number(e.target.value))}
-              className="ctrl-range" />
-          </div>
-          <button className="run-btn" onClick={runForecast} disabled={loading}>
-            {loading ? "⏳ Running…" : "▶  Run Forecast"}
-          </button>
         </div>
-      </Card>
-
-      {loading && <Loader />}
-
-      {!loading && preds.length > 0 && (
-        <>
-          <div className="stats-grid">
-            <StatCard label="Total Projected" value={fmtK(total)}             icon="📈" accent="#f97316" />
-            <StatCard label="Daily Average"   value={fmtK(total / days)}      icon="📊" accent="#fb923c" />
-            <StatCard label="Peak Day"        value={peak?.date?.slice(5)}     icon="🏆" accent="#ea580c"
-              sub={`${fmtK(peak?.predicted_sales)} units`} />
-            <StatCard label="Store"           value={`#${storeNbr}`}           icon="🏪" accent="#c2410c"
-              sub={`${days}-day window`} />
+        <nav style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+          {tabs.map(t => (
+            <button key={t} onClick={() => setActiveTab(t)} style={{
+              background: activeTab === t ? C.accent + "20" : "transparent",
+              border: activeTab === t ? `1px solid ${C.accent}40` : "1px solid transparent",
+              color: activeTab === t ? C.accent : C.muted,
+              borderRadius: 6, padding: "6px 14px", cursor: "pointer",
+              fontSize: 13, textTransform: "capitalize", fontFamily: "inherit",
+            }}>{t}</button>
+          ))}
+        </nav>
+        {summary && (
+          <div style={{ color: C.muted, fontSize: 11 }}>
+            {summary.date_range.start} → {summary.date_range.end}
           </div>
+        )}
+      </header>
 
-          <Card title={`Forecast — Store ${storeNbr}`}>
-            <ResponsiveContainer width="100%" height={300}>
-              <AreaChart data={preds}>
-                <defs>
-                  <linearGradient id="fcastGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#f97316" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#f97316" stopOpacity={0}   />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-                <XAxis dataKey="date" tick={{ fill: "#666", fontSize: 9 }}
-                  tickFormatter={(v) => v.slice(5)} />
-                <YAxis tickFormatter={fmtK} tick={{ fill: "#666", fontSize: 10 }} />
-                <Tooltip formatter={(v) => [fmtK(v), "Predicted"]}
-                  contentStyle={tooltipStyle} labelStyle={{ color: "#f97316" }} />
-                <Area type="monotone" dataKey="predicted_sales"
-                  stroke="#f97316" fill="url(#fcastGrad)"
-                  strokeWidth={2.5} dot={{ fill: "#f97316", r: 3 }} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </Card>
+      <main style={{ padding: "20px 16px", maxWidth: "100%", margin: "0 auto" }}>
 
-          <Card title="Daily Breakdown">
-            <div className="table-wrap">
-              <table className="data-table">
+        {/* ── DASHBOARD TAB ── */}
+        {activeTab === "dashboard" && (
+          <>
+            {/* KPI row */}
+            {summary && (
+              <div style={{ display: "flex", gap: 16, marginBottom: 28, flexWrap: "wrap" }}>
+                <KPICard label="Total Unit Sales" value={fmt(summary.total_sales)} color={C.accent} />
+                <KPICard label="Total Transactions" value={fmt(summary.total_transactions)} color={C.accent2} />
+                <KPICard label="Top Product" value={summary.top_item} sub="by volume" color={C.accent3} />
+                <KPICard label="Top Store" value={summary.top_store} sub="by volume" color="#f43f5e" />
+              </div>
+            )}
+
+            {/* Store selector */}
+            <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ color: C.muted, fontSize: 13 }}>Filter by store:</span>
+              <select value={selStore} onChange={e => setSelStore(+e.target.value)} style={{
+                background: C.card, border: `1px solid ${C.border}`, color: C.text,
+                borderRadius: 6, padding: "6px 12px", fontSize: 13, cursor: "pointer",
+              }}>
+                {stores.map(s => <option key={s.store_nbr} value={s.store_nbr}>{s.name}</option>)}
+              </select>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20, marginBottom: 20 }}>
+              {/* Monthly trend */}
+              <ChartCard title="Monthly Sales Trend">
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={trend}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="date" tick={{ fill: C.muted, fontSize: 11 }} />
+                    <YAxis tick={{ fill: C.muted, fontSize: 11 }} />
+                    <Tooltip content={customTooltip} />
+                    <Line type="monotone" dataKey="unit_sales" stroke={C.accent} strokeWidth={2}
+                      dot={{ r: 3, fill: C.accent }} name="Unit Sales" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              {/* Family pie */}
+              <ChartCard title="Sales by Product Family">
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={familySales} dataKey="total_sales" nameKey="family"
+                      cx="50%" cy="50%" outerRadius={85} label={({ family, percent }) =>
+                        `${family.replace("_"," ")}: ${(percent*100).toFixed(0)}%`}
+                      labelLine={{ stroke: C.muted }} fontSize={10} fill={C.accent}>
+                      {familySales.map((_, i) => <Cell key={i} fill={FAMILY_COLORS[i % FAMILY_COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip content={customTooltip} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              {/* Top items */}
+              <ChartCard title="Top 10 Products">
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={topItems} layout="vertical" margin={{ left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} horizontal={false} />
+                    <XAxis type="number" tick={{ fill: C.muted, fontSize: 10 }} />
+                    <YAxis dataKey="item_name" type="category" width={110}
+                      tick={{ fill: C.muted, fontSize: 10 }} />
+                    <Tooltip content={customTooltip} />
+                    <Bar dataKey="unit_sales" fill={C.accent2} radius={[0,4,4,0]} name="Sales" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartCard>
+            </div>
+
+            {/* Store comparison */}
+            <ChartCard title="Store Performance Comparison">
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={storeComp}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                  <XAxis dataKey="name" tick={{ fill: C.muted, fontSize: 11 }} />
+                  <YAxis tick={{ fill: C.muted, fontSize: 11 }} />
+                  <Tooltip content={customTooltip} />
+                  <Bar dataKey="unit_sales" radius={[4,4,0,0]} name="Total Sales">
+                    {storeComp.map((_, i) => <Cell key={i} fill={FAMILY_COLORS[i % FAMILY_COLORS.length]} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          </>
+        )}
+
+        {/* ── FORECAST TAB ── */}
+        {activeTab === "forecast" && (
+          <div>
+            <h1 style={{ color: C.accent, fontSize: 22, marginBottom: 6, marginTop: 0 }}>
+              AI Sales Forecasting
+            </h1>
+            <p style={{ color: C.muted, fontSize: 13, marginBottom: 24 }}>
+              Gradient Boosting model trained on seasonal patterns, holidays, and promotion data.
+            </p>
+
+            {/* Controls */}
+            <div style={{
+              background: C.card, border: `1px solid ${C.border}`,
+              borderRadius: 12, padding: 20, marginBottom: 24,
+              display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-end"
+            }}>
+              <div>
+                <label style={{ color: C.muted, fontSize: 12, display: "block", marginBottom: 6 }}>Store</label>
+                <select value={selStore} onChange={e => setSelStore(+e.target.value)} style={{
+                  background: C.surface, border: `1px solid ${C.border}`, color: C.text,
+                  borderRadius: 6, padding: "8px 12px", fontSize: 13, minWidth: 220,
+                }}>
+                  {stores.map(s => <option key={s.store_nbr} value={s.store_nbr}>{s.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ color: C.muted, fontSize: 12, display: "block", marginBottom: 6 }}>Product</label>
+                <select value={selItem} onChange={e => setSelItem(+e.target.value)} style={{
+                  background: C.surface, border: `1px solid ${C.border}`, color: C.text,
+                  borderRadius: 6, padding: "8px 12px", fontSize: 13, minWidth: 200,
+                }}>
+                  {items.map(it => <option key={it.item_nbr} value={it.item_nbr}>{it.item_name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ color: C.muted, fontSize: 12, display: "block", marginBottom: 6 }}>Forecast Horizon</label>
+                <select value={fcDays} onChange={e => setFcDays(+e.target.value)} style={{
+                  background: C.surface, border: `1px solid ${C.border}`, color: C.text,
+                  borderRadius: 6, padding: "8px 12px", fontSize: 13,
+                }}>
+                  <option value={7}>7 days</option>
+                  <option value={14}>14 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={60}>60 days</option>
+                  <option value={90}>90 days</option>
+                </select>
+              </div>
+              <button onClick={runForecast} disabled={loading} style={{
+                background: C.accent, color: "#0B1120", border: "none",
+                borderRadius: 6, padding: "9px 24px", fontWeight: 700, cursor: loading ? "wait" : "pointer",
+                fontSize: 13, opacity: loading ? 0.7 : 1, fontFamily: "inherit",
+              }}>
+                {loading ? "Running…" : "▶ Run Forecast"}
+              </button>
+            </div>
+
+            {forecast && (
+              <>
+                <div style={{ display: "flex", gap: 14, marginBottom: 20, flexWrap: "wrap" }}>
+                  <KPICard label="Product" value={forecast.item_name} color={C.accent} />
+                  <KPICard label="Store" value={forecast.store_name} color={C.accent2} />
+                  <KPICard label="Forecast Days" value={fcDays} color={C.accent3} />
+                  <KPICard label="Avg Daily Forecast"
+                    value={(forecast.forecast.reduce((s,r) => s + r.predicted_sales, 0) / forecast.forecast.length).toFixed(2)}
+                    sub="units/day" color="#f43f5e" />
+                </div>
+
+                <ChartCard title="Actuals vs Forecast">
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                      <XAxis dataKey="date" tick={{ fill: C.muted, fontSize: 10 }} />
+                      <YAxis tick={{ fill: C.muted, fontSize: 10 }} />
+                      <Tooltip content={customTooltip} />
+                      <Legend />
+                      <Line data={forecast.actuals} type="monotone" dataKey="unit_sales"
+                        stroke={C.accent} strokeWidth={2} name="Actual" dot={false} />
+                      <Line data={forecast.forecast} type="monotone" dataKey="predicted_sales"
+                        stroke={C.accent2} strokeWidth={2} strokeDasharray="5 5" name="Forecast" dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </ChartCard>
+
+                {/* Forecast table */}
+                <div style={{ marginTop: 20, background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+                  <div style={{ padding: "12px 20px", borderBottom: `1px solid ${C.border}` }}>
+                    <SectionTitle>Forecast Detail</SectionTitle>
+                  </div>
+                  <div style={{ maxHeight: 280, overflowY: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ background: C.surface }}>
+                          {["Date","Predicted Sales","Trend"].map(h => (
+                            <th key={h} style={{ padding: "10px 20px", textAlign: "left", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {forecast.forecast.map((row, i) => {
+                          const prev = forecast.forecast[i - 1];
+                          const delta = prev ? row.predicted_sales - prev.predicted_sales : 0;
+                          return (
+                            <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                              <td style={{ padding: "9px 20px", color: C.muted, fontFamily: "monospace" }}>{row.date}</td>
+                              <td style={{ padding: "9px 20px", color: C.text, fontFamily: "monospace", fontWeight: 600 }}>{row.predicted_sales}</td>
+                              <td style={{ padding: "9px 20px", color: delta >= 0 ? C.accent : "#f43f5e" }}>
+                                {delta >= 0 ? `▲ +${delta.toFixed(2)}` : `▼ ${delta.toFixed(2)}`}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── STORES TAB ── */}
+        {activeTab === "stores" && (
+          <div>
+            <h1 style={{ color: C.accent, fontSize: 22, marginBottom: 20, marginTop: 0 }}>Store Directory</h1>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px,1fr))", gap: 16 }}>
+              {stores.map(s => (
+                <div key={s.store_nbr} style={{
+                  background: C.card, border: `1px solid ${C.border}`,
+                  borderRadius: 12, padding: 20,
+                  borderLeft: `4px solid ${FAMILY_COLORS[s.store_nbr % FAMILY_COLORS.length]}`
+                }}>
+                  <div style={{ color: C.text, fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{s.name}</div>
+                  <div style={{ color: C.muted, fontSize: 13 }}>{s.city}, {s.state}</div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                    {[["Type", s.type], ["Cluster", s.cluster]].map(([k, v]) => (
+                      <span key={k} style={{
+                        background: C.surface, border: `1px solid ${C.border}`,
+                        borderRadius: 4, padding: "3px 8px", fontSize: 11, color: C.muted
+                      }}>{k}: <strong style={{ color: C.text }}>{v}</strong></span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── ITEMS TAB ── */}
+        {activeTab === "items" && (
+          <div>
+            <h1 style={{ color: C.accent, fontSize: 22, marginBottom: 20, marginTop: 0 }}>Product Catalog</h1>
+            <div style={{ overflowX: "auto", background: C.card, border: `1px solid ${C.border}`, borderRadius: 12 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
-                  <tr><th>Date</th><th>Day</th><th>Predicted Sales</th><th>vs Avg</th></tr>
+                  <tr style={{ background: C.surface }}>
+                    {["#","Product Name","Family","Class","Perishable"].map(h => (
+                      <th key={h} style={{ padding: "12px 16px", textAlign: "left", color: C.muted, fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
                 </thead>
                 <tbody>
-                  {preds.map((r, i) => {
-                    const avg  = total / days;
-                    const diff = ((r.predicted_sales - avg) / avg * 100).toFixed(1);
-                    const dow  = new Date(r.date).toLocaleDateString("en-US", { weekday: "short" });
-                    return (
-                      <tr key={i}>
-                        <td>{r.date}</td>
-                        <td>{dow}</td>
-                        <td className="num-cell">{fmtK(r.predicted_sales)}</td>
-                        <td>
-                          <span className={`delta ${Number(diff) >= 0 ? "pos" : "neg"}`}>
-                            {Number(diff) >= 0 ? "+" : ""}{diff}%
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {items.map((it, i) => (
+                    <tr key={it.item_nbr} style={{ borderTop: `1px solid ${C.border}`, background: i % 2 === 0 ? "transparent" : C.surface + "40" }}>
+                      <td style={{ padding: "10px 16px", color: C.muted, fontFamily: "monospace" }}>{it.item_nbr}</td>
+                      <td style={{ padding: "10px 16px", color: C.text, fontWeight: 500 }}>{it.item_name}</td>
+                      <td style={{ padding: "10px 16px" }}>
+                        <span style={{
+                          background: FAMILY_COLORS[
+                            ["WSF_FERTILIZER","STRAIGHT_FERT","MICRONUTRIENT","SOIL_AMENDMENT","FERTIGATION","LIQUID_FOLIAR"]
+                              .indexOf(it.family) % FAMILY_COLORS.length] + "30",
+                          color: FAMILY_COLORS[
+                            ["WSF_FERTILIZER","STRAIGHT_FERT","MICRONUTRIENT","SOIL_AMENDMENT","FERTIGATION","LIQUID_FOLIAR"]
+                              .indexOf(it.family) % FAMILY_COLORS.length],
+                          borderRadius: 4, padding: "2px 8px", fontSize: 11
+                        }}>{it.family.replace("_"," ")}</span>
+                      </td>
+                      <td style={{ padding: "10px 16px", color: C.muted, fontFamily: "monospace" }}>{it.class}</td>
+                      <td style={{ padding: "10px 16px", color: it.perishable ? C.accent2 : C.muted }}>
+                        {it.perishable ? "⚡ Yes (1.25×)" : "No"}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-          </Card>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────
-   Page: Agent
-───────────────────────────────────────── */
-function Agent() {
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      text:
-        "👋 Welcome! I'm the **Favorita Forecasting Agent**.\n\nAsk me anything about store sales, forecasts, economic drivers, or product families.\n\n**Try:**\n• Forecast store 5 sales\n• Which stores perform best?\n• How does oil affect sales?\n• Tell me about the 2016 earthquake\n• Explain the payday effect"
-    }
-  ]);
-  const [input, setInput]   = useState("");
-  const [loading, setLoading] = useState(false);
-  const bottomRef = useRef(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  const send = async () => {
-    const msg = input.trim();
-    if (!msg || loading) return;
-    setInput("");
-    setMessages((m) => [...m, { role: "user", text: msg }]);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/agent/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg })
-      });
-      const data = await res.json();
-      setMessages((m) => [...m, { role: "assistant", text: data.response }]);
-    } catch {
-      setMessages((m) => [...m, {
-        role: "assistant",
-        text: "❌ Cannot connect to backend. Make sure Flask is running on port 5000."
-      }]);
-    }
-    setLoading(false);
-  };
-
-  const handleKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
-
-  // Render **bold** inline
-  const renderText = (text) =>
-    text.split(/\*\*(.*?)\*\*/g).map((part, i) =>
-      i % 2 === 1 ? <strong key={i}>{part}</strong> : part
-    );
-
-  const chips = [
-    "Forecast store 1 sales",
-    "Which stores perform best?",
-    "How does oil affect sales?",
-    "Explain the payday effect",
-    "Tell me about the 2016 earthquake"
-  ];
-
-  return (
-    <div className="page agent-page">
-      <div className="page-header">
-        <h1>AI Forecasting Agent</h1>
-        <span className="page-sub">Natural language queries powered by the forecasting engine</span>
-      </div>
-
-      <div className="chat-box">
-        <div className="chat-messages">
-          {messages.map((m, i) => (
-            <div key={i} className={`msg ${m.role}`}>
-              <div className="msg-avatar">{m.role === "assistant" ? "🤖" : "👤"}</div>
-              <div className="msg-bubble">
-                {m.text.split("\n").map((line, j) => (
-                  <p key={j}>{renderText(line)}</p>
-                ))}
-              </div>
-            </div>
-          ))}
-          {loading && (
-            <div className="msg assistant">
-              <div className="msg-avatar">🤖</div>
-              <div className="msg-bubble typing">
-                <span /><span /><span />
-              </div>
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-
-        <div className="chips">
-          {chips.map((c, i) => (
-            <button key={i} className="chip" onClick={() => setInput(c)}>{c}</button>
-          ))}
-        </div>
-
-        <div className="chat-footer">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKey}
-            placeholder="Ask about forecasts, sales, economic factors…"
-            className="chat-input"
-          />
-          <button className="send-btn" onClick={send} disabled={loading || !input.trim()}>
-            ➤
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────
-   Root App
-───────────────────────────────────────── */
-const NAV = [
-  { id: "overview", icon: "📊", label: "Overview"  },
-  { id: "stores",   icon: "🏪", label: "Stores"    },
-  { id: "forecast", icon: "📈", label: "Forecast"  },
-  { id: "agent",    icon: "🤖", label: "Agent"     },
-];
-
-export default function App() {
-  const [page, setPage] = useState("overview");
-
-  return (
-    <>
-      <aside className="sidebar">
-        <div className="logo">
-          <div className="logo-name">FAVORITA</div>
-          <div className="logo-tag">FORECASTING DASHBOARD</div>
-        </div>
-
-        <nav className="nav">
-          {NAV.map((n) => (
-            <button
-              key={n.id}
-              className={`nav-item ${page === n.id ? "active" : ""}`}
-              onClick={() => setPage(n.id)}>
-              <span className="nav-icon">{n.icon}</span>
-              <span>{n.label}</span>
-            </button>
-          ))}
-        </nav>
-
-        <div className="sidebar-foot">
-          Corporación Favorita<br />
-          Ecuador · 2013–2017
-        </div>
-      </aside>
-
-      <main className="main-content">
-        {page === "overview" && <Overview />}
-        {page === "stores"   && <Stores />}
-        {page === "forecast" && <Forecast />}
-        {page === "agent"    && <Agent />}
+          </div>
+        )}
       </main>
-    </>
+    </div>
   );
 }
