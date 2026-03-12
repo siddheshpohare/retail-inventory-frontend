@@ -10,6 +10,8 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import os, json
 from datetime import datetime, timedelta
 import warnings
@@ -69,6 +71,144 @@ model = GradientBoostingRegressor(n_estimators=120, max_depth=5,
                                   learning_rate=0.08, random_state=42)
 model.fit(X, y)
 print("Model trained ✓")
+
+# ── Model Evaluation ──────────────────────────────────────────────────────────
+# Split: take a 20% slice from the middle of the date range as the validation set
+# (still time-based to avoid leakage, but not using the most recent data)
+unique_dates = sorted(train_feat["date"].unique())
+
+# determine indices for a central 20% window. for example, start at 40% and
+# end at 60% through the sorted dates. this can be adjusted if you want the
+# "middle" region shifted.
+start_idx = int(len(unique_dates) * 0.4)
+end_idx   = start_idx + int(len(unique_dates) * 0.2)
+# guard against rounding issues
+end_idx = min(end_idx, len(unique_dates)-1)
+
+val_start_date = unique_dates[start_idx]
+val_end_date   = unique_dates[end_idx]
+
+train_mask = (train_feat["date"] < val_start_date) | (train_feat["date"] > val_end_date)
+val_mask   = (train_feat["date"] >= val_start_date) & (train_feat["date"] <= val_end_date)
+
+X_tr, y_tr = X[train_mask],  y[train_mask]
+X_val, y_val = X[val_mask],  y[val_mask]
+
+# Train a separate evaluation model on the 80% split
+eval_model = GradientBoostingRegressor(n_estimators=120, max_depth=5,
+                                       learning_rate=0.08, random_state=42)
+eval_model.fit(X_tr, y_tr)
+val_preds = eval_model.predict(X_val).clip(min=0)
+
+# ── Core metrics ──────────────────────────────────────────────────────────────
+def nwrmsle(y_true, y_pred, weights):
+    """Normalized Weighted Root Mean Squared Logarithmic Error — competition metric."""
+    y_true = np.array(y_true).clip(min=0)
+    y_pred = np.array(y_pred).clip(min=0)
+    weights = np.array(weights)
+    log_diff = (np.log1p(y_pred) - np.log1p(y_true)) ** 2
+    return float(np.sqrt(np.sum(weights * log_diff) / np.sum(weights)))
+
+val_weights = train_feat[val_mask].merge(
+    items_df[["item_nbr","perishable"]], on="item_nbr", how="left"
+)["perishable_y"].fillna(0).apply(lambda p: 1.25 if p == 1 else 1.0).values
+
+mae   = float(mean_absolute_error(y_val, val_preds))
+rmse  = float(np.sqrt(mean_squared_error(y_val, val_preds)))
+r2    = float(r2_score(y_val, val_preds))
+mape  = float(np.mean(np.abs((y_val - val_preds) / (y_val + 1e-9))) * 100)
+nwrmsle_score = nwrmsle(y_val, val_preds, val_weights)
+
+# ── Cross-validation with TimeSeriesSplit ─────────────────────────────────────
+tscv     = TimeSeriesSplit(n_splits=5)
+cv_maes  = []
+cv_rmses = []
+cv_r2s   = []
+
+for fold, (tr_idx, val_idx) in enumerate(tscv.split(X)):
+    cv_model = GradientBoostingRegressor(n_estimators=80, max_depth=5,
+                                         learning_rate=0.08, random_state=42)
+    cv_model.fit(X.iloc[tr_idx], y.iloc[tr_idx])
+    cv_preds = cv_model.predict(X.iloc[val_idx]).clip(min=0)
+    cv_maes.append(mean_absolute_error(y.iloc[val_idx], cv_preds))
+    cv_rmses.append(np.sqrt(mean_squared_error(y.iloc[val_idx], cv_preds)))
+    cv_r2s.append(r2_score(y.iloc[val_idx], cv_preds))
+
+# ── Feature importance ────────────────────────────────────────────────────────
+feature_importances = [
+    {"feature": f, "importance": round(float(v), 5)}
+    for f, v in sorted(zip(FEATURES, model.feature_importances_),
+                       key=lambda x: x[1], reverse=True)
+]
+
+# ── Residual analysis ─────────────────────────────────────────────────────────
+val_df = train_feat[val_mask].copy()
+val_df["predicted"]  = val_preds
+val_df["residual"]   = val_df["unit_sales"] - val_df["predicted"]
+val_df["abs_error"]  = val_df["residual"].abs()
+val_df["date_str"]   = val_df["date"].astype(str)
+
+# Residuals by month
+residuals_by_month = (
+    val_df.groupby(val_df["date"].dt.month)
+    .agg(mean_residual=("residual","mean"), mae=("abs_error","mean"))
+    .reset_index()
+    .rename(columns={"date":"month"})
+)
+residuals_by_month["month"] = residuals_by_month["month"].map({
+    1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+    7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"
+})
+residuals_by_month = residuals_by_month.round(4).to_dict(orient="records")
+
+# Actual vs predicted sample (100 rows for chart)
+sample_val = val_df.sort_values("date").head(100)
+actual_vs_pred = [
+    {"date": row["date_str"], "actual": round(row["unit_sales"], 2),
+     "predicted": round(row["predicted"], 2)}
+    for _, row in sample_val.iterrows()
+]
+
+# Error distribution buckets
+errors = val_df["abs_error"].values
+error_dist = [
+    {"bucket": "0–1",   "count": int((errors < 1).sum())},
+    {"bucket": "1–2",   "count": int(((errors >= 1)  & (errors < 2)).sum())},
+    {"bucket": "2–3",   "count": int(((errors >= 2)  & (errors < 3)).sum())},
+    {"bucket": "3–5",   "count": int(((errors >= 3)  & (errors < 5)).sum())},
+    {"bucket": "5–10",  "count": int(((errors >= 5)  & (errors < 10)).sum())},
+    {"bucket": "10+",   "count": int((errors >= 10).sum())},
+]
+
+# Per-family MAE
+family_mae = (
+    val_df.groupby("family")["abs_error"].mean()
+    .reset_index()
+    .rename(columns={"abs_error":"mae"})
+    .round(4)
+    .to_dict(orient="records")
+)
+
+# Per-store MAE
+store_mae = (
+    val_df.groupby("store_nbr")["abs_error"].mean()
+    .reset_index()
+    .merge(stores_df[["store_nbr","name"]], on="store_nbr")
+    .rename(columns={"abs_error":"mae"})
+    .round(4)
+    .to_dict(orient="records")
+)
+
+# Store cross-validation results per fold
+cv_fold_results = [
+    {"fold": i + 1,
+     "mae":  round(cv_maes[i],  4),
+     "rmse": round(cv_rmses[i], 4),
+     "r2":   round(cv_r2s[i],   4)}
+    for i in range(len(cv_maes))
+]
+
+print(f"Evaluation done ✓  MAE={mae:.3f}  RMSE={rmse:.3f}  R²={r2:.3f}  NWRMSLE={nwrmsle_score:.4f}")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def predict_future(store_nbr, item_nbr, days=30):
@@ -190,6 +330,47 @@ def store_comparison():
            .merge(stores_df[["store_nbr","name","city"]], on="store_nbr"))
     grp["unit_sales"] = grp["unit_sales"].round(2)
     return jsonify(grp.to_dict(orient="records"))
+
+@app.route("/api/evaluation")
+def evaluation():
+    return jsonify({
+        # ── Split info ──────────────────────────────────────────────────────
+        "split": {
+            "train_rows":      int(train_mask.sum()),
+            "val_rows":        int(val_mask.sum()),
+            # For legacy compatibility, include a field indicating where the validation slice sits
+            "val_start":       str(val_start_date.date()),
+            "val_end":         str(val_end_date.date()),
+            "split_ratio":     "80 / 20",
+            "split_strategy":  "Time-based (middle 20% of dates)",
+        },
+        # ── Metrics ─────────────────────────────────────────────────────────
+        "metrics": {
+            "mae":            round(mae, 4),
+            "rmse":           round(rmse, 4),
+            "r2":             round(r2, 4),
+            "mape":           round(mape, 4),
+            "nwrmsle":        round(nwrmsle_score, 4),
+        },
+        # ── Cross-validation ─────────────────────────────────────────────
+        "cross_validation": {
+            "strategy":       "TimeSeriesSplit (5 folds)",
+            "folds":          cv_fold_results,
+            "mean_mae":       round(float(np.mean(cv_maes)),  4),
+            "mean_rmse":      round(float(np.mean(cv_rmses)), 4),
+            "mean_r2":        round(float(np.mean(cv_r2s)),   4),
+            "std_mae":        round(float(np.std(cv_maes)),   4),
+        },
+        # ── Feature importance ───────────────────────────────────────────
+        "feature_importance":   feature_importances,
+        # ── Residual analysis ────────────────────────────────────────────
+        "residuals_by_month":   residuals_by_month,
+        "actual_vs_predicted":  actual_vs_pred,
+        "error_distribution":   error_dist,
+        "family_mae":           family_mae,
+        "store_mae":            store_mae,
+    })
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

@@ -274,19 +274,14 @@ main > div > div:first-child > div:nth-child(4) { animation-delay: 0.20s; }
     padding-bottom: 4px;
   }
 
-  /* Stack grid to single column */
-  div[style*="grid-template-columns"] {
+  /* Stack grid to single column on small screens only */
+  div[style*="grid-template-columns: 1fr 1fr"] {
     grid-template-columns: 1fr !important;
   }
 
-  div[style*="gridColumn"],
-  div[style*='gridColumn'] {
+  div[style*="gridColumn: '1 / -1'"],
+  div[style*='gridColumn: "1 / -1"'] {
     grid-column: auto !important;
-  }
-
-  /* Make charts smaller on smaller screens */
-  .recharts-wrapper {
-    height: 180px !important;
   }
 
   /* KPI cards wrap nicely */
